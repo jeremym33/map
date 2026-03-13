@@ -125,16 +125,10 @@
       // 4. Decorative border
       drawBorder(W, H);
 
-      // 5. Compass rose
-      drawCompassRose(W - 95, 90, 70);
+      // 5. Compass rose (bottom right)
+      drawCompassRose(W - 95, H - 95, 70);
 
-      // 6. Dotted treasure path
-      drawTreasurePath(W, H);
-
-      // 7. X marks the spot
-      drawX(W * 0.555, H * 0.29, 28);
-
-      // 8. Labels & decorations
+      // 6. Labels & decorations
       drawLabels(W, H);
 
       // 9. Wax seal
@@ -411,13 +405,6 @@
       ctx.font      = `bold italic ${Math.round(bh*0.62)}px Georgia`;
       ctx.textAlign = 'center';
       ctx.fillText('CARTE AU TRÉSOR', W/2, by);
-
-      // "Ici le trésor" label near X
-      const lx = W * 0.555 + 38, ly = H * 0.29 - 18;
-      ctx.font      = `italic ${Math.round(W*0.030)}px Georgia`;
-      ctx.fillStyle = RED_WAX;
-      ctx.textAlign = 'left';
-      ctx.fillText('Ici le trésor !', lx, ly);
 
       // Rue du Commandant — extracted from the map
       ctx.save();
