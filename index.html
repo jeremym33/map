@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Carte au Trésor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a0e05;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Georgia', serif;
+      padding: 20px;
+    }
+    h1 {
+      color: #c8a84b;
+      font-size: 1.4rem;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+      text-shadow: 0 0 12px #8b6914;
+    }
+    #canvas-wrapper {
+      position: relative;
+      display: inline-block;
+      box-shadow: 0 0 40px #000, 0 0 80px #000;
+    }
+    canvas {
+      display: block;
+      max-width: 100%;
+    }
+    .controls {
+      margin-top: 18px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      background: #5c3a0e;
+      color: #f5d98c;
+      border: 2px solid #c8a84b;
+      padding: 10px 22px;
+      font-size: 0.95rem;
+      font-family: 'Georgia', serif;
+      cursor: pointer;
+      letter-spacing: 1px;
+      border-radius: 3px;
+      transition: background 0.2s, color 0.2s;
+    }
+    button:hover { background: #c8a84b; color: #1a0e05; }
+    label.upload-btn {
+      background: #5c3a0e;
+      color: #f5d98c;
+      border: 2px solid #c8a84b;
+      padding: 10px 22px;
+      font-size: 0.95rem;
+      font-family: 'Georgia', serif;
+      cursor: pointer;
+      letter-spacing: 1px;
+      border-radius: 3px;
+      transition: background 0.2s, color 0.2s;
+    }
+    label.upload-btn:hover { background: #c8a84b; color: #1a0e05; }
+    #file-input { display: none; }
+  </style>
+</head>
+<body>
+  <h1>⚓ Carte au Trésor ⚓</h1>
+  <div id="canvas-wrapper">
+    <canvas id="map-canvas"></canvas>
+  </div>
+  <div class="controls">
+    <label class="upload-btn" for="file-input">📜 Charger une carte</label>
+    <input type="file" id="file-input" accept="image/*" />
+    <button id="btn-download">⬇ Télécharger</button>
+  </div>
+
+  <script>
+  (function () {
+    const canvas = document.getElementById('map-canvas');
+    const ctx = canvas.getContext('2d');
+
+    // ── Treasure-map colour palette ──────────────────────────
+    const PARCHMENT   = '#e8d5a3';
+    const INK         = '#3b1f08';
+    const RED_WAX     = '#8b1a1a';
+    const GOLD        = '#c8a84b';
+    const DARK_INK    = '#1a0a02';
+
+    // ── Seeded pseudo-random (for reproducible noise) ────────
+    let seed = 42;
+    function rng() {
+      seed = (seed * 1664525 + 1013904223) & 0xffffffff;
+      return (seed >>> 0) / 0xffffffff;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // MAIN DRAW FUNCTION
+    // ──────────────────────────────────────────────────────────
+    function drawTreasureMap(sourceImg) {
+      const W = sourceImg ? sourceImg.naturalWidth  || sourceImg.width  : 540;
+      const H = sourceImg ? sourceImg.naturalHeight || sourceImg.height : 960;
+
+      canvas.width  = W;
+      canvas.height = H;
+
+      // 1. Parchment base
+      drawParchmentBase(W, H);
+
+      // 2. Bake in the source map (desaturated + sepia)
+      if (sourceImg) {
+        drawMapImage(sourceImg, W, H);
+      } else {
+        drawDemoStreets(W, H);
+      }
+
+      // 3. Aged-paper overlay (noise, burn edges)
+      drawAgeOverlay(W, H);
+
+      // 4. Decorative border
+      drawBorder(W, H);
+
+      // 5. Compass rose
+      drawCompassRose(W - 95, 90, 70);
+
+      // 6. Dotted treasure path
+      drawTreasurePath(W, H);
+
+      // 7. X marks the spot
+      drawX(W * 0.555, H * 0.29, 28);
+
+      // 8. Labels & decorations
+      drawLabels(W, H);
+
+      // 9. Wax seal
+      drawWaxSeal(55, H - 70, 42);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    function drawParchmentBase(W, H) {
+      // Gradient parchment
+      const g = ctx.createRadialGradient(W*0.5, H*0.45, 0, W*0.5, H*0.45, Math.max(W,H)*0.75);
+      g.addColorStop(0,   '#f0dda8');
+      g.addColorStop(0.6, '#e0c98a');
+      g.addColorStop(1,   '#b89040');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    function drawMapImage(img, W, H) {
+      // Draw into offscreen canvas to manipulate pixels
+      const off = document.createElement('canvas');
+      off.width = W; off.height = H;
+      const oc = off.getContext('2d');
+
+      oc.drawImage(img, 0, 0, W, H);
+      const id = oc.getImageData(0, 0, W, H);
+      const d  = id.data;
+
+      for (let i = 0; i < d.length; i += 4) {
+        // Greyscale
+        const grey = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+        // Sepia transform
+        d[i]   = Math.min(255, grey * 1.0  + 30);   // R
+        d[i+1] = Math.min(255, grey * 0.82 + 10);   // G
+        d[i+2] = Math.min(255, grey * 0.55);         // B
+        d[i+3] = 200;                                // semi-transparent
+      }
+      oc.putImageData(id, 0, 0);
+
+      // Blend over parchment
+      ctx.drawImage(off, 0, 0);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Demo streets (when no image is loaded)
+    function drawDemoStreets(W, H) {
+      ctx.strokeStyle = '#a07840';
+      ctx.lineWidth = 6;
+      // Horizontal
+      ctx.beginPath(); ctx.moveTo(0, H*0.72); ctx.lineTo(W, H*0.72); ctx.stroke();
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(0, H*0.50); ctx.lineTo(W, H*0.50); ctx.stroke();
+      // Vertical
+      ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(W*0.62, 0); ctx.lineTo(W*0.62, H); ctx.stroke();
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(W*0.20, 0); ctx.lineTo(W*0.20, H); ctx.stroke();
+
+      // Street label (demo)
+      ctx.save();
+      ctx.translate(W*0.45, H*0.74);
+      ctx.fillStyle = INK; ctx.font = `italic ${Math.round(W*0.022)}px Georgia`;
+      ctx.fillText('Rue du Commandant Hau…', 0, 0);
+      ctx.restore();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    function drawAgeOverlay(W, H) {
+      seed = 42; // reset for reproducibility
+
+      // Fine paper grain
+      const id = ctx.getImageData(0, 0, W, H);
+      const d  = id.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const n = (rng() - 0.5) * 28;
+        d[i]   = Math.min(255, Math.max(0, d[i]   + n));
+        d[i+1] = Math.min(255, Math.max(0, d[i+1] + n * 0.8));
+        d[i+2] = Math.min(255, Math.max(0, d[i+2] + n * 0.5));
+      }
+      ctx.putImageData(id, 0, 0);
+
+      // Burn / vignette edges
+      const vg = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.3, W/2, H/2, Math.max(W,H)*0.75);
+      vg.addColorStop(0,   'rgba(0,0,0,0)');
+      vg.addColorStop(0.7, 'rgba(30,10,0,0.15)');
+      vg.addColorStop(1,   'rgba(10,4,0,0.6)');
+      ctx.fillStyle = vg;
+      ctx.fillRect(0, 0, W, H);
+
+      // Random brown stain patches
+      for (let s = 0; s < 6; s++) {
+        const sx = rng() * W, sy = rng() * H;
+        const sr = rng() * W * 0.12 + W * 0.04;
+        const sg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+        sg.addColorStop(0,   `rgba(80,40,0,${0.06 + rng()*0.08})`);
+        sg.addColorStop(1,   'rgba(80,40,0,0)');
+        ctx.fillStyle = sg; ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    function drawBorder(W, H) {
+      const m = 14;
+      ctx.save();
+
+      // Outer thick border
+      ctx.strokeStyle = INK; ctx.lineWidth = 5;
+      ctx.strokeRect(m, m, W - m*2, H - m*2);
+
+      // Inner thin double border
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(m+7, m+7, W - (m+7)*2, H - (m+7)*2);
+      ctx.strokeRect(m+10, m+10, W - (m+10)*2, H - (m+10)*2);
+
+      // Corner ornaments
+      const corners = [[m,m],[W-m,m],[m,H-m],[W-m,H-m]];
+      corners.forEach(([cx,cy]) => {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.fillStyle = INK;
+        ctx.beginPath();
+        for (let a = 0; a < 8; a++) {
+          const ang = (a/8)*Math.PI*2;
+          const r   = a%2===0 ? 9 : 4;
+          a===0 ? ctx.moveTo(Math.cos(ang)*r, Math.sin(ang)*r)
+                : ctx.lineTo(Math.cos(ang)*r, Math.sin(ang)*r);
+        }
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+      });
+
+      ctx.restore();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    function drawCompassRose(cx, cy, size) {
+      ctx.save(); ctx.translate(cx, cy);
+
+      // Shadow
+      ctx.shadowColor = 'rgba(0,0,0,0.4)'; ctx.shadowBlur = 8;
+
+      // Outer circle
+      ctx.beginPath(); ctx.arc(0, 0, size*0.9, 0, Math.PI*2);
+      ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle   = 'rgba(240,215,160,0.75)'; ctx.fill();
+
+      ctx.shadowBlur = 0;
+
+      // Cardinal arms
+      const dirs = [
+        {a:-Math.PI/2, label:'N'},
+        {a: Math.PI/2, label:'S'},
+        {a: Math.PI,   label:'O'},
+        {a: 0,         label:'E'},
+      ];
+      dirs.forEach(({a, label}) => {
+        ctx.save(); ctx.rotate(a);
+        // Main arm
+        ctx.beginPath();
+        ctx.moveTo(0, -size*0.85);
+        ctx.lineTo(-size*0.18, 0);
+        ctx.lineTo(0, size*0.2);
+        ctx.lineTo(size*0.18, 0);
+        ctx.closePath();
+        ctx.fillStyle   = label==='N' ? RED_WAX : INK;
+        ctx.fill();
+        ctx.strokeStyle = DARK_INK; ctx.lineWidth = 0.8; ctx.stroke();
+        // Label
+        ctx.fillStyle = INK;
+        ctx.font      = `bold ${Math.round(size*0.28)}px Georgia`;
+        ctx.textAlign = 'center';
+        ctx.fillText(label, 0, -size*1.05);
+        ctx.restore();
+      });
+
+      // Inter-cardinal arms (smaller)
+      for (let i = 0; i < 4; i++) {
+        ctx.save(); ctx.rotate(Math.PI/4 + i*Math.PI/2);
+        ctx.beginPath();
+        ctx.moveTo(0, -size*0.55);
+        ctx.lineTo(-size*0.1, 0);
+        ctx.lineTo(0,  size*0.12);
+        ctx.lineTo( size*0.1, 0);
+        ctx.closePath();
+        ctx.fillStyle = '#7a5a2a'; ctx.fill();
+        ctx.restore();
+      }
+
+      // Centre circle
+      ctx.beginPath(); ctx.arc(0, 0, size*0.1, 0, Math.PI*2);
+      ctx.fillStyle = RED_WAX; ctx.fill();
+      ctx.strokeStyle = DARK_INK; ctx.lineWidth = 1; ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    function drawTreasurePath(W, H) {
+      // A curved dotted path leading to the X
+      const pts = [
+        [W*0.12, H*0.78],
+        [W*0.22, H*0.68],
+        [W*0.30, H*0.58],
+        [W*0.38, H*0.50],
+        [W*0.44, H*0.40],
+        [W*0.50, H*0.33],
+        [W*0.555, H*0.295],
+      ];
+
+      ctx.save();
+      ctx.setLineDash([6, 10]);
+      ctx.lineDashOffset = 0;
+      ctx.strokeStyle = RED_WAX;
+      ctx.lineWidth   = 2.5;
+      ctx.lineCap     = 'round';
+
+      ctx.beginPath();
+      ctx.moveTo(...pts[0]);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const mx = (pts[i][0] + pts[i+1][0]) / 2;
+        const my = (pts[i][1] + pts[i+1][1]) / 2;
+        ctx.quadraticCurveTo(pts[i][0], pts[i][1], mx, my);
+      }
+      ctx.lineTo(...pts[pts.length-1]);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      // Small footprint at start
+      ctx.fillStyle = RED_WAX;
+      ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], 6, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    function drawX(cx, cy, size) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 6;
+
+      // Circle around X
+      ctx.beginPath(); ctx.arc(0, 0, size*1.3, 0, Math.PI*2);
+      ctx.strokeStyle = RED_WAX; ctx.lineWidth = 2.5; ctx.stroke();
+
+      // The X
+      ctx.strokeStyle = RED_WAX; ctx.lineWidth = 4; ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-size, -size); ctx.lineTo(size, size); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo( size, -size); ctx.lineTo(-size, size); ctx.stroke();
+
+      // Decorative dots
+      const ddots = [[0,-size*1.3],[0,size*1.3],[-size*1.3,0],[size*1.3,0]];
+      ctx.fillStyle = RED_WAX;
+      ddots.forEach(([dx,dy]) => {
+        ctx.beginPath(); ctx.arc(dx, dy, 3, 0, Math.PI*2); ctx.fill();
+      });
+
+      ctx.restore();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    function drawLabels(W, H) {
+      ctx.save();
+      ctx.fillStyle    = INK;
+      ctx.textBaseline = 'middle';
+
+      // Title banner
+      const bh = Math.round(H * 0.052);
+      const by = Math.round(H * 0.038);
+      ctx.fillStyle = 'rgba(40,18,4,0.82)';
+      roundRect(ctx, W*0.15, by - bh/2, W*0.70, bh, 4);
+      ctx.fill();
+      ctx.fillStyle = GOLD;
+      ctx.font      = `bold italic ${Math.round(bh*0.62)}px Georgia`;
+      ctx.textAlign = 'center';
+      ctx.fillText('CARTE AU TRÉSOR', W/2, by);
+
+      // "Ici le trésor" label near X
+      const lx = W * 0.555 + 38, ly = H * 0.29 - 18;
+      ctx.font      = `italic ${Math.round(W*0.030)}px Georgia`;
+      ctx.fillStyle = RED_WAX;
+      ctx.textAlign = 'left';
+      ctx.fillText('Ici le trésor !', lx, ly);
+
+      // Rue du Commandant — extracted from the map
+      ctx.save();
+      const streetY = H * 0.72;
+      ctx.translate(W * 0.35, streetY - 9);
+      ctx.fillStyle = INK;
+      ctx.font      = `italic ${Math.round(W*0.022)}px Georgia`;
+      ctx.textAlign = 'center';
+      ctx.fillText('Rue du Commandant Hau…', 0, 0);
+      ctx.restore();
+
+      // "Cité Chantecrit" label
+      ctx.save();
+      ctx.translate(W * 0.91, H * 0.40);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = INK; ctx.font = `italic ${Math.round(W*0.020)}px Georgia`;
+      ctx.textAlign = 'center';
+      ctx.fillText('Cité Chantecrit', 0, 0);
+      ctx.restore();
+
+      // Scale bar bottom-left
+      const sbx = 30, sby = H - 32, sbw = W * 0.15;
+      ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(sbx, sby); ctx.lineTo(sbx+sbw, sby); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sbx, sby-5); ctx.lineTo(sbx, sby+5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sbx+sbw, sby-5); ctx.lineTo(sbx+sbw, sby+5); ctx.stroke();
+      ctx.fillStyle = INK; ctx.font = `${Math.round(W*0.020)}px Georgia`;
+      ctx.textAlign = 'center';
+      ctx.fillText('~200 m', sbx + sbw/2, sby - 8);
+
+      ctx.restore();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    function drawWaxSeal(cx, cy, r) {
+      ctx.save(); ctx.translate(cx, cy);
+      ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 10;
+
+      // Seal body
+      ctx.beginPath();
+      for (let i = 0; i < 14; i++) {
+        const a  = (i/14)*Math.PI*2 - Math.PI/2;
+        const rr = r * (i%2===0 ? 1 : 0.85);
+        i===0 ? ctx.moveTo(Math.cos(a)*rr, Math.sin(a)*rr)
+              : ctx.lineTo(Math.cos(a)*rr, Math.sin(a)*rr);
+      }
+      ctx.closePath();
+      ctx.fillStyle = RED_WAX; ctx.fill();
+      ctx.strokeStyle = '#5a0a0a'; ctx.lineWidth = 1.5; ctx.stroke();
+
+      ctx.shadowBlur = 0;
+
+      // Anchor icon
+      ctx.strokeStyle = 'rgba(255,200,180,0.9)'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+      // Vertical bar
+      ctx.beginPath(); ctx.moveTo(0, -r*0.55); ctx.lineTo(0,  r*0.55); ctx.stroke();
+      // Crossbar
+      ctx.beginPath(); ctx.moveTo(-r*0.35, -r*0.32); ctx.lineTo(r*0.35, -r*0.32); ctx.stroke();
+      // Ring
+      ctx.beginPath(); ctx.arc(0, -r*0.55, r*0.13, 0, Math.PI*2); ctx.stroke();
+      // Flukes
+      ctx.beginPath();
+      ctx.moveTo(-r*0.35, r*0.4); ctx.lineTo(0, r*0.55); ctx.lineTo(r*0.35, r*0.4);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Utility: rounded rectangle path
+    function roundRect(c, x, y, w, h, rad) {
+      c.beginPath();
+      c.moveTo(x+rad, y);
+      c.lineTo(x+w-rad, y); c.arcTo(x+w, y, x+w, y+rad, rad);
+      c.lineTo(x+w, y+h-rad); c.arcTo(x+w, y+h, x+w-rad, y+h, rad);
+      c.lineTo(x+rad, y+h); c.arcTo(x, y+h, x, y+h-rad, rad);
+      c.lineTo(x, y+rad); c.arcTo(x, y, x+rad, y, rad);
+      c.closePath();
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Bootstrap: draw demo map immediately, then wait for user upload
+    drawTreasureMap(null);
+
+    document.getElementById('file-input').addEventListener('change', function () {
+      const file = this.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { drawTreasureMap(img); URL.revokeObjectURL(url); };
+      img.src = url;
+    });
+
+    document.getElementById('btn-download').addEventListener('click', function () {
+      const a = document.createElement('a');
+      a.download = 'carte-au-tresor.png';
+      a.href = canvas.toDataURL('image/png');
+      a.click();
+    });
+
+  })();
+  </script>
+</body>
+</html>
